@@ -1,0 +1,178 @@
+{
+  "rules": [
+    {
+      "id": "PT-W001",
+      "title": "Office application spawned a shell or script host",
+      "description": "Macro-enabled documents commonly launch script interpreters to download or run a payload.",
+      "severity": "high",
+      "score": 75,
+      "attack": ["T1204.002", "T1059"],
+      "match": {
+        "parent_name": ["winword.exe", "excel.exe", "powerpnt.exe", "outlook.exe", "msaccess.exe", "mspub.exe", "onenote.exe", "visio.exe"],
+        "name": ["powershell.exe", "pwsh.exe", "cmd.exe", "wscript.exe", "cscript.exe", "mshta.exe", "rundll32.exe", "regsvr32.exe", "certutil.exe", "bitsadmin.exe", "msbuild.exe"]
+      }
+    },
+    {
+      "id": "PT-W002",
+      "title": "svchost.exe with an unexpected parent",
+      "description": "Legitimate svchost.exe instances are started by services.exe.",
+      "severity": "high",
+      "score": 70,
+      "attack": ["T1036.005"],
+      "match": {
+        "name": ["svchost.exe"],
+        "parent_name_not": ["services.exe"]
+      }
+    },
+    {
+      "id": "PT-W003",
+      "title": "lsass.exe with an unexpected parent",
+      "description": "The real LSASS is started by wininit.exe. Anything else is a strong sign of masquerading.",
+      "severity": "critical",
+      "score": 90,
+      "attack": ["T1036.005", "T1003.001"],
+      "match": {
+        "name": ["lsass.exe"],
+        "parent_name_not": ["wininit.exe"]
+      }
+    },
+    {
+      "id": "PT-W004",
+      "title": "Core Windows process running outside the system directory",
+      "severity": "high",
+      "score": 80,
+      "attack": ["T1036.005"],
+      "match": {
+        "name": ["svchost.exe", "lsass.exe", "services.exe", "csrss.exe", "smss.exe", "wininit.exe", "winlogon.exe", "spoolsv.exe", "taskhostw.exe", "lsm.exe"],
+        "path_prefix_not": ["c:\\windows\\system32\\", "c:\\windows\\syswow64\\"]
+      }
+    },
+    {
+      "id": "PT-W005",
+      "title": "Process name imitates a Windows system process",
+      "description": "Names one or two characters away from a system binary, such as scvhost.exe or lsass .exe.",
+      "severity": "high",
+      "score": 70,
+      "attack": ["T1036.005"],
+      "match": {
+        "name_lookalike": ["svchost.exe", "lsass.exe", "csrss.exe", "services.exe", "explorer.exe", "winlogon.exe", "smss.exe", "wininit.exe", "spoolsv.exe", "taskhostw.exe", "rundll32.exe", "conhost.exe"]
+      }
+    },
+    {
+      "id": "PT-W006",
+      "title": "Non-ASCII characters in process name",
+      "description": "May indicate a homoglyph (for example a Cyrillic letter) used to imitate a trusted name. Can be legitimate for localized software.",
+      "severity": "medium",
+      "score": 40,
+      "attack": ["T1036"],
+      "match": {
+        "name_non_ascii": true
+      }
+    },
+    {
+      "id": "PT-W007",
+      "title": "Encoded or download-cradle PowerShell",
+      "severity": "high",
+      "score": 65,
+      "attack": ["T1059.001", "T1027"],
+      "match": {
+        "name": ["powershell.exe", "pwsh.exe"],
+        "command_line_regex": [
+          "(^|\\s)[-/]e(c|nc|ncodedcommand)?\\s",
+          "frombase64string",
+          "\\biex\\b|invoke-expression",
+          "downloadstring|downloadfile|invoke-webrequest|\\biwr\\b",
+          "[-/]w(indowstyle)?\\s+hidden"
+        ]
+      }
+    },
+    {
+      "id": "PT-W008",
+      "title": "rundll32 executing script content",
+      "severity": "high",
+      "score": 80,
+      "attack": ["T1218.011"],
+      "match": {
+        "name": ["rundll32.exe"],
+        "command_line_regex": ["javascript:", "vbscript:", "mshtml,runhtmlapplication"]
+      }
+    },
+    {
+      "id": "PT-W009",
+      "title": "regsvr32 loading a remote scriptlet (Squiblydoo)",
+      "severity": "critical",
+      "score": 85,
+      "attack": ["T1218.010"],
+      "match": {
+        "name": ["regsvr32.exe"],
+        "command_line_regex": ["/i:\\s*https?://", "scrobj\\.dll"]
+      }
+    },
+    {
+      "id": "PT-W010",
+      "title": "certutil used to download or decode files",
+      "severity": "high",
+      "score": 70,
+      "attack": ["T1105", "T1140"],
+      "match": {
+        "name": ["certutil.exe"],
+        "command_line_regex": ["urlcache", "[-/]decode(hex)?\\b", "verifyctl.*https?://"]
+      }
+    },
+    {
+      "id": "PT-W011",
+      "title": "mshta.exe execution",
+      "description": "mshta runs HTML applications and is rarely used legitimately on modern systems.",
+      "severity": "medium",
+      "score": 55,
+      "attack": ["T1218.005"],
+      "match": {
+        "name": ["mshta.exe"]
+      }
+    },
+    {
+      "id": "PT-W012",
+      "title": "Web server spawned a shell",
+      "description": "A typical sign of a web shell or exploited web application.",
+      "severity": "critical",
+      "score": 85,
+      "attack": ["T1505.003", "T1190"],
+      "match": {
+        "parent_name": ["w3wp.exe", "httpd.exe", "nginx.exe", "php-cgi.exe", "tomcat.exe", "tomcat9.exe", "tomcat10.exe"],
+        "name": ["cmd.exe", "powershell.exe", "pwsh.exe", "whoami.exe", "net.exe", "net1.exe", "certutil.exe"]
+      }
+    },
+    {
+      "id": "PT-W013",
+      "title": "Executable running from a user-writable location",
+      "description": "Low-confidence signal; installers also do this. Mainly useful combined with other detections.",
+      "severity": "low",
+      "score": 30,
+      "attack": ["T1204.002"],
+      "match": {
+        "path_contains": ["\\appdata\\local\\temp\\", "\\windows\\temp\\", "\\users\\public\\", "\\$recycle.bin\\", "\\programdata\\"]
+      }
+    },
+    {
+      "id": "PT-L001",
+      "title": "Web server spawned a shell (Linux)",
+      "severity": "critical",
+      "score": 85,
+      "attack": ["T1505.003", "T1190"],
+      "match": {
+        "parent_name": ["nginx", "apache2", "httpd", "php-fpm", "php-fpm8.2", "php-fpm8.3", "lighttpd"],
+        "name": ["sh", "bash", "dash", "zsh", "python", "python3", "perl", "nc", "ncat", "socat", "curl", "wget"]
+      }
+    },
+    {
+      "id": "PT-L002",
+      "title": "Executable running from a temporary directory (Linux)",
+      "severity": "medium",
+      "score": 45,
+      "attack": ["T1059.004"],
+      "match": {
+        "path_contains": ["/tmp/", "/dev/shm/", "/var/tmp/"]
+      }
+    }
+  ]
+}

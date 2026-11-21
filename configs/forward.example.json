@@ -1,0 +1,18 @@
+{
+  "mode": "forward",
+  "scan_interval": "2s",
+  "rules_path": "rules/default.json",
+  "only_alerts": false,
+  "stdout": false,
+  "hash": { "enabled": true, "max_file_mb": 200 },
+  "forward": {
+    "url": "https://collector.example.internal:8443/ingest",
+    "ca_file": "certs/ca.pem",
+    "cert_file": "certs/agent.pem",
+    "key_file": "certs/agent-key.pem",
+    "token_env": "PROCTRACE_TOKEN",
+    "spool_path": "proctrace-spool.jsonl",
+    "flush_interval": "10s",
+    "max_batch_mb": 5
+  }
+}
