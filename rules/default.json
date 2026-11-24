@@ -78,7 +78,7 @@
       "match": {
         "name": ["powershell.exe", "pwsh.exe"],
         "command_line_regex": [
-          "(^|\\s)[-/]e(c|nc|ncodedcommand)?\\s",
+          "(^|\\s)[-/](ec|e|en|enc|enco|encod|encode|encoded|encodedc|encodedco|encodedcom|encodedcomm|encodedcomma|encodedcomman|encodedcommand)\\s",
           "frombase64string",
           "\\biex\\b|invoke-expression",
           "downloadstring|downloadfile|invoke-webrequest|\\biwr\\b",
@@ -151,6 +151,23 @@
       "attack": ["T1204.002"],
       "match": {
         "path_contains": ["\\appdata\\local\\temp\\", "\\windows\\temp\\", "\\users\\public\\", "\\$recycle.bin\\", "\\programdata\\"]
+      },
+      "except": {
+        "path_prefix": [
+          "c:\\programdata\\microsoft\\windows defender\\platform\\",
+          "c:\\programdata\\microsoft\\windows defender advanced threat protection\\"
+        ]
+      }
+    },
+    {
+      "id": "PT-W014",
+      "title": "Renamed Windows system utility",
+      "description": "The file's built-in OriginalFileName says it is a system tool, but it runs under a different name. Attackers rename tools like powershell.exe to slip past name-based detection.",
+      "severity": "high",
+      "score": 75,
+      "attack": ["T1036.003"],
+      "match": {
+        "renamed_from": ["powershell.exe", "powershell_ise.exe", "cmd.exe", "certutil.exe", "rundll32.exe", "regsvr32.exe", "mshta.exe", "wscript.exe", "cscript.exe", "bitsadmin.exe", "msbuild.exe", "wmic.exe", "schtasks.exe", "reg.exe", "net.exe", "whoami.exe", "msiexec.exe", "installutil.exe", "regasm.exe", "regsvcs.exe"]
       }
     },
     {

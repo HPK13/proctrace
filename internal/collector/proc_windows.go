@@ -9,6 +9,7 @@ import (
 	"unsafe"
 
 	"github.com/HPK13/proctrace/internal/event"
+	"github.com/HPK13/proctrace/internal/winapi"
 )
 
 const (
@@ -18,8 +19,8 @@ const (
 )
 
 var (
-	modKernel32                    = syscall.NewLazyDLL("kernel32.dll")
-	modNtdll                       = syscall.NewLazyDLL("ntdll.dll")
+	modKernel32                    = winapi.SystemDLL("kernel32.dll")
+	modNtdll                       = winapi.SystemDLL("ntdll.dll")
 	procQueryFullProcessImageNameW = modKernel32.NewProc("QueryFullProcessImageNameW")
 	procNtQueryInformationProcess  = modNtdll.NewProc("NtQueryInformationProcess")
 )

@@ -1,9 +1,10 @@
 {
   "mode": "local",
   "scan_interval": "2s",
-  "rules_path": "rules/default.json",
+  "data_dir": "data",
   "only_alerts": false,
   "stdout": false,
   "hash": { "enabled": true, "max_file_mb": 200 },
-  "local": { "path": "proctrace-events.jsonl", "max_size_mb": 100 }
+  "privacy": { "redact_command_lines": true, "drop_command_lines": false, "max_command_line": 4096 },
+  "local": { "path": "events.jsonl", "max_size_mb": 100 }
 }
