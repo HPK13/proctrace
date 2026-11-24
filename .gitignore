@@ -1,1 +1,22 @@
+# Build output
+/bin/
+/dist/
+*.exe
+/proctrace
 
+# Runtime output
+*.jsonl
+*.jsonl.1
+/data/
+*.inflight
+
+# Secrets / certificates
+certs/
+*.pem
+*.key
+.env
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
