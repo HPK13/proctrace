@@ -17,6 +17,13 @@ type Hash struct {
 	SHA256 string `json:"sha256,omitempty"`
 }
 
+// PE holds metadata from a Windows executable's version resource (ECS
+// process.pe.*). OriginalFileName is set by the publisher at build time and
+// survives renaming the file, so it exposes renamed system tools.
+type PE struct {
+	OriginalFileName string `json:"original_file_name,omitempty"`
+}
+
 // Parent is the subset of process fields recorded for a parent process.
 type Parent struct {
 	PID        int       `json:"pid"`
@@ -33,6 +40,7 @@ type Process struct {
 	CommandLine string    `json:"command_line,omitempty"`
 	Start       time.Time `json:"start,omitzero"`
 	Hash        *Hash     `json:"hash,omitempty"`
+	PE          *PE       `json:"pe,omitempty"`
 	Parent      *Parent   `json:"parent,omitempty"`
 
 	// PPID is the parent PID as reported by the OS. It is not trusted on

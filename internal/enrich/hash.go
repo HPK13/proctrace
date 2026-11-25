@@ -1,4 +1,5 @@
-// Package enrich adds context to observed processes.
+// Package enrich adds file-based context to observed processes: the SHA-256
+// of the executable and, on Windows, its PE OriginalFileName.
 package enrich
 
 import (
@@ -15,41 +16,62 @@ import (
 // maxCacheEntries bounds memory use; the cache is simply reset when full.
 const maxCacheEntries = 10000
 
-// Hasher computes SHA-256 hashes of process images, caching by
+type facts struct {
+	sha256   string
+	original string
+}
+
+// Enricher looks up facts about executables, caching them by
 // path + size + modification time so each binary is read only once.
-type Hasher struct {
-	MaxFileSize int64 // files larger than this are skipped; 0 = no limit
+type Enricher struct {
+	Hash        bool  // compute SHA-256
+	MaxFileSize int64 // skip hashing files larger than this; 0 = no limit
 
 	mu    sync.Mutex
-	cache map[string]string
+	cache map[string]facts
+	read  func(string) string // OriginalFileName reader (swappable in tests)
 }
 
-// NewHasher returns a Hasher that skips files above maxFileSize bytes.
-func NewHasher(maxFileSize int64) *Hasher {
-	return &Hasher{MaxFileSize: maxFileSize, cache: map[string]string{}}
+// New returns an Enricher. hash enables SHA-256; files larger than
+// maxFileSize bytes are not hashed.
+func New(hash bool, maxFileSize int64) *Enricher {
+	return &Enricher{Hash: hash, MaxFileSize: maxFileSize, cache: map[string]facts{}, read: originalFileName}
 }
 
-// SHA256 returns the hex SHA-256 of the file at path.
-func (h *Hasher) SHA256(path string) (string, error) {
+func (e *Enricher) lookup(path string) (facts, error) {
 	fi, err := os.Stat(path)
 	if err != nil {
-		return "", err
+		return facts{}, err
 	}
 	if !fi.Mode().IsRegular() {
-		return "", fmt.Errorf("%s is not a regular file", path)
-	}
-	if h.MaxFileSize > 0 && fi.Size() > h.MaxFileSize {
-		return "", fmt.Errorf("%s exceeds hash size limit", path)
+		return facts{}, fmt.Errorf("%s is not a regular file", path)
 	}
 	key := fmt.Sprintf("%s|%d|%d", path, fi.Size(), fi.ModTime().UnixNano())
 
-	h.mu.Lock()
-	if sum, ok := h.cache[key]; ok {
-		h.mu.Unlock()
-		return sum, nil
+	e.mu.Lock()
+	f, ok := e.cache[key]
+	e.mu.Unlock()
+	if ok {
+		return f, nil
 	}
-	h.mu.Unlock()
 
+	f.original = e.read(path)
+	if e.Hash && (e.MaxFileSize <= 0 || fi.Size() <= e.MaxFileSize) {
+		if sum, err := hashFile(path); err == nil {
+			f.sha256 = sum
+		}
+	}
+
+	e.mu.Lock()
+	if len(e.cache) >= maxCacheEntries {
+		e.cache = map[string]facts{}
+	}
+	e.cache[key] = f
+	e.mu.Unlock()
+	return f, nil
+}
+
+func hashFile(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err
@@ -59,24 +81,36 @@ func (h *Hasher) SHA256(path string) (string, error) {
 	if _, err := io.Copy(d, f); err != nil {
 		return "", err
 	}
-	sum := hex.EncodeToString(d.Sum(nil))
-
-	h.mu.Lock()
-	if len(h.cache) >= maxCacheEntries {
-		h.cache = map[string]string{}
-	}
-	h.cache[key] = sum
-	h.mu.Unlock()
-	return sum, nil
+	return hex.EncodeToString(d.Sum(nil)), nil
 }
 
-// Enrich sets p.Hash when the executable can be read. Failures are silent:
-// a missing hash is normal for protected or already-exited processes.
-func (h *Hasher) Enrich(p *event.Process) {
+// SHA256 returns the hex SHA-256 of the file at path, or an error if it
+// cannot be read or is over the size limit.
+func (e *Enricher) SHA256(path string) (string, error) {
+	f, err := e.lookup(path)
+	if err != nil {
+		return "", err
+	}
+	if f.sha256 == "" {
+		return "", fmt.Errorf("%s was not hashed (disabled or over size limit)", path)
+	}
+	return f.sha256, nil
+}
+
+// Enrich sets p.Hash and p.PE when the executable can be read. Failures are
+// silent: missing facts are normal for protected or already-exited processes.
+func (e *Enricher) Enrich(p *event.Process) {
 	if p.Executable == "" {
 		return
 	}
-	if sum, err := h.SHA256(p.Executable); err == nil {
-		p.Hash = &event.Hash{SHA256: sum}
+	f, err := e.lookup(p.Executable)
+	if err != nil {
+		return
+	}
+	if f.sha256 != "" {
+		p.Hash = &event.Hash{SHA256: f.sha256}
+	}
+	if f.original != "" {
+		p.PE = &event.PE{OriginalFileName: f.original}
 	}
 }

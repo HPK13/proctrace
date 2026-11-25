@@ -1,0 +1,70 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 3 * * 1" # weekly, so new Go CVEs show up even without commits
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          check-latest: true
+      - name: gofmt
+        if: runner.os == 'Linux'
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - name: vet
+        run: go vet ./...
+      - name: test (race detector)
+        if: runner.os == 'Linux'
+        run: go test -race ./...
+      - name: test
+        if: runner.os == 'Windows'
+        run: go test ./...
+      - name: smoke test
+        run: go run ./cmd/proctrace -once -alerts -allow-unsafe-paths
+
+  vulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          check-latest: true
+      - name: govulncheck (Linux build)
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+      - name: govulncheck (Windows build)
+        run: GOOS=windows govulncheck ./...
+
+  build:
+    needs: [test, vulncheck]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          check-latest: true
+      - name: build binaries
+        run: |
+          GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_SHA::7}" -o dist/proctrace-windows-amd64.exe ./cmd/proctrace
+          GOOS=linux   GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_SHA::7}" -o dist/proctrace-linux-amd64 ./cmd/proctrace
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proctrace-binaries
+          path: dist/

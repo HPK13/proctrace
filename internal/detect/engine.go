@@ -4,9 +4,21 @@
 // condition, any one entry is enough. String comparisons are
 // case-insensitive. Conditions about the parent only fire when the parent
 // was verified by lineage.Link, so a PID-reuse mix-up cannot raise an alert.
+//
+// Inputs are hardened against simple evasion before matching:
+//   - "name" matches the process name OR its PE OriginalFileName, so a
+//     renamed powershell.exe is still recognised.
+//   - command_line_regex runs on a normalised command line (see
+//     NormalizeCommandLine) and on the decoded payload of PowerShell
+//     -EncodedCommand.
+//
+// A rule may carry an "except" block with the same conditions; when the
+// except block matches, the rule does not fire.
 package detect
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -19,16 +31,19 @@ import (
 	"github.com/HPK13/proctrace/internal/lineage"
 )
 
-// Match holds a rule's conditions. Empty fields are ignored.
+// Match holds a set of conditions. Empty fields are ignored.
 type Match struct {
 	Name             []string `json:"name,omitempty"`
 	NameNot          []string `json:"name_not,omitempty"`
+	RenamedFrom      []string `json:"renamed_from,omitempty"`
 	ParentName       []string `json:"parent_name,omitempty"`
 	ParentNameNot    []string `json:"parent_name_not,omitempty"`
+	PathPrefix       []string `json:"path_prefix,omitempty"`
 	PathPrefixNot    []string `json:"path_prefix_not,omitempty"`
 	PathContains     []string `json:"path_contains,omitempty"`
 	CommandLineRegex []string `json:"command_line_regex,omitempty"`
 	NameLookalike    []string `json:"name_lookalike,omitempty"`
+	LookalikeEdits   int      `json:"name_lookalike_edits,omitempty"` // exact edits for name_lookalike: 1 (default) or 2
 	NameNonASCII     bool     `json:"name_non_ascii,omitempty"`
 	ParentStatus     []string `json:"parent_status,omitempty"`
 }
@@ -43,6 +58,7 @@ type Rule struct {
 	Attack      []string `json:"attack,omitempty"`
 	Disabled    bool     `json:"disabled,omitempty"`
 	Match       Match    `json:"match"`
+	Except      *Match   `json:"except,omitempty"`
 }
 
 // RuleFile is the on-disk format.
@@ -50,14 +66,25 @@ type RuleFile struct {
 	Rules []Rule `json:"rules"`
 }
 
+type compiledMatch struct {
+	Match
+	cmd []*regexp.Regexp
+}
+
 type compiled struct {
 	Rule
-	cmd []*regexp.Regexp
+	match  compiledMatch
+	except *compiledMatch
 }
 
 // Engine evaluates compiled rules.
 type Engine struct {
 	rules []compiled
+
+	// Source and SHA256 identify the rule set, for logging at start-up so a
+	// tampered rule file shows up in the agent's own log.
+	Source string
+	SHA256 string
 }
 
 // LoadFile reads and compiles a rule file.
@@ -66,11 +93,37 @@ func LoadFile(path string) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
+	return Load(data, path)
+}
+
+// Load compiles rules from JSON; source names where they came from.
+func Load(data []byte, source string) (*Engine, error) {
 	var rf RuleFile
 	if err := json.Unmarshal(data, &rf); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, fmt.Errorf("%s: %w", source, err)
 	}
-	return New(rf.Rules)
+	e, err := New(rf.Rules)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", source, err)
+	}
+	sum := sha256.Sum256(data)
+	e.Source, e.SHA256 = source, hex.EncodeToString(sum[:])
+	return e, nil
+}
+
+func compileMatch(m Match, id string) (compiledMatch, error) {
+	c := compiledMatch{Match: m}
+	if m.LookalikeEdits < 0 || m.LookalikeEdits > 2 {
+		return c, fmt.Errorf("rule %s: name_lookalike_edits must be 1 or 2", id)
+	}
+	for _, expr := range m.CommandLineRegex {
+		re, err := regexp.Compile("(?i)" + expr)
+		if err != nil {
+			return c, fmt.Errorf("rule %s: %w", id, err)
+		}
+		c.cmd = append(c.cmd, re)
+	}
+	return c, nil
 }
 
 // New compiles rules, rejecting duplicates and bad regexes.
@@ -89,12 +142,16 @@ func New(rules []Rule) (*Engine, error) {
 		}
 		ids[r.ID] = true
 		c := compiled{Rule: r}
-		for _, expr := range r.Match.CommandLineRegex {
-			re, err := regexp.Compile("(?i)" + expr)
+		var err error
+		if c.match, err = compileMatch(r.Match, r.ID); err != nil {
+			return nil, err
+		}
+		if r.Except != nil {
+			ex, err := compileMatch(*r.Except, r.ID)
 			if err != nil {
-				return nil, fmt.Errorf("rule %s: %w", r.ID, err)
+				return nil, err
 			}
-			c.cmd = append(c.cmd, re)
+			c.except = &ex
 		}
 		e.rules = append(e.rules, c)
 	}
@@ -104,17 +161,57 @@ func New(rules []Rule) (*Engine, error) {
 // Len reports how many rules are active.
 func (e *Engine) Len() int { return len(e.rules) }
 
+// subject is a process prepared for matching (computed once per process).
+type subject struct {
+	p           event.Process
+	name        string // lower-case process name
+	original    string // lower-case PE OriginalFileName without ".mui", or ""
+	path        string // lower-case executable path
+	parent      string // lower-case parent name if verified
+	parentKnown bool
+	cmd         string // normalised command line
+	decoded     string // normalised -EncodedCommand payload, or ""
+}
+
+func newSubject(p event.Process) subject {
+	s := subject{
+		p:    p,
+		name: strings.ToLower(p.Name),
+		path: normPath(p.Executable),
+		cmd:  NormalizeCommandLine(p.CommandLine),
+	}
+	if p.PE != nil {
+		s.original = normOriginal(p.PE.OriginalFileName)
+	}
+	if p.ParentStatus == lineage.StatusVerified && p.Parent != nil {
+		s.parentKnown = true
+		s.parent = strings.ToLower(p.Parent.Name)
+	}
+	if isPowerShell(s.name, s.original) {
+		s.decoded = NormalizeCommandLine(DecodePowerShell(p.CommandLine))
+	}
+	return s
+}
+
 // Evaluate returns matching detections (highest score first) and a 0-100
 // risk score: the top score plus 5 for each additional detection.
 func (e *Engine) Evaluate(p event.Process) ([]event.Detection, int) {
+	s := newSubject(p)
 	var dets []event.Detection
 	for _, r := range e.rules {
-		if reason, ok := r.matches(p); ok {
-			dets = append(dets, event.Detection{
-				RuleID: r.ID, Title: r.Title, Severity: r.Severity,
-				Score: r.Score, Attack: r.Attack, Reason: reason,
-			})
+		reason, ok := r.match.eval(s)
+		if !ok {
+			continue
 		}
+		if r.except != nil {
+			if _, skip := r.except.eval(s); skip {
+				continue
+			}
+		}
+		dets = append(dets, event.Detection{
+			RuleID: r.ID, Title: r.Title, Severity: r.Severity,
+			Score: r.Score, Attack: r.Attack, Reason: reason,
+		})
 	}
 	if len(dets) == 0 {
 		return nil, 0
@@ -124,54 +221,58 @@ func (e *Engine) Evaluate(p event.Process) ([]event.Detection, int) {
 	return dets, score
 }
 
-func (r compiled) matches(p event.Process) (string, bool) {
-	m := r.Match
-	name := strings.ToLower(p.Name)
-	path := normPath(p.Executable)
-	parentKnown := p.ParentStatus == lineage.StatusVerified && p.Parent != nil
-	parent := ""
-	if parentKnown {
-		parent = strings.ToLower(p.Parent.Name)
-	}
+// eval reports whether every set condition holds, and why.
+func (m compiledMatch) eval(s subject) (string, bool) {
 	var why []string
 
 	if len(m.Name) > 0 {
-		if !inFold(name, m.Name) {
+		switch {
+		case inFold(s.name, m.Name):
+			why = append(why, "process "+s.p.Name)
+		case s.original != "" && inFold(s.original, m.Name):
+			why = append(why, fmt.Sprintf("process %s (originally %s)", s.p.Name, s.original))
+		default:
 			return "", false
 		}
-		why = append(why, "process "+p.Name)
 	}
-	if len(m.NameNot) > 0 && inFold(name, m.NameNot) {
+	if len(m.NameNot) > 0 && inFold(s.name, m.NameNot) {
 		return "", false
 	}
-	if len(m.ParentName) > 0 {
-		if !parentKnown || !inFold(parent, m.ParentName) {
+	if len(m.RenamedFrom) > 0 {
+		if s.original == "" || s.original == s.name || !inFold(s.original, m.RenamedFrom) {
 			return "", false
 		}
-		why = append(why, "parent "+p.Parent.Name)
+		why = append(why, fmt.Sprintf("renamed copy of %s running as %s", s.original, s.p.Name))
+	}
+	if len(m.ParentName) > 0 {
+		if !s.parentKnown || !inFold(s.parent, m.ParentName) {
+			return "", false
+		}
+		why = append(why, "parent "+s.p.Parent.Name)
 	}
 	if len(m.ParentNameNot) > 0 {
-		if !parentKnown || inFold(parent, m.ParentNameNot) {
+		if !s.parentKnown || inFold(s.parent, m.ParentNameNot) {
 			return "", false
 		}
-		why = append(why, fmt.Sprintf("unexpected parent %s (expected %s)", p.Parent.Name, strings.Join(m.ParentNameNot, " or ")))
+		why = append(why, fmt.Sprintf("unexpected parent %s (expected %s)", s.p.Parent.Name, strings.Join(m.ParentNameNot, " or ")))
+	}
+	if len(m.PathPrefix) > 0 {
+		if s.path == "" || !hasAnyPrefix(s.path, m.PathPrefix) {
+			return "", false
+		}
+		why = append(why, "running from "+s.p.Executable)
 	}
 	if len(m.PathPrefixNot) > 0 {
-		if path == "" {
+		if s.path == "" || hasAnyPrefix(s.path, m.PathPrefixNot) {
 			return "", false
 		}
-		for _, pre := range m.PathPrefixNot {
-			if strings.HasPrefix(path, strings.ToLower(pre)) {
-				return "", false
-			}
-		}
-		why = append(why, "running from "+p.Executable)
+		why = append(why, "running from "+s.p.Executable)
 	}
 	if len(m.PathContains) > 0 {
 		hit := ""
-		for _, s := range m.PathContains {
-			if path != "" && strings.Contains(path, strings.ToLower(s)) {
-				hit = s
+		for _, v := range m.PathContains {
+			if s.path != "" && strings.Contains(s.path, strings.ToLower(v)) {
+				hit = v
 				break
 			}
 		}
@@ -180,39 +281,49 @@ func (r compiled) matches(p event.Process) (string, bool) {
 		}
 		why = append(why, "path contains "+hit)
 	}
-	if len(r.cmd) > 0 {
+	if len(m.cmd) > 0 {
 		hit := ""
-		for _, re := range r.cmd {
-			if p.CommandLine != "" && re.MatchString(p.CommandLine) {
-				hit = re.String()[4:] // drop "(?i)"
+		for _, re := range m.cmd {
+			pattern := strings.TrimPrefix(re.String(), "(?i)")
+			if s.cmd != "" && re.MatchString(s.cmd) {
+				hit = "command line matches " + pattern
+				break
+			}
+			if s.decoded != "" && re.MatchString(s.decoded) {
+				hit = "decoded -EncodedCommand payload matches " + pattern
 				break
 			}
 		}
 		if hit == "" {
 			return "", false
 		}
-		why = append(why, "command line matches "+hit)
+		why = append(why, hit)
 	}
 	if len(m.NameLookalike) > 0 {
-		target := lookalike(name, m.NameLookalike)
+		edits := max(m.LookalikeEdits, 1)
+		target := lookalike(s.name, m.NameLookalike, edits)
 		if target == "" {
 			return "", false
 		}
-		why = append(why, fmt.Sprintf("name %q resembles %s", p.Name, target))
+		unit := "edit"
+		if edits > 1 {
+			unit = "edits"
+		}
+		why = append(why, fmt.Sprintf("name %q resembles %s (%d %s away)", s.p.Name, target, edits, unit))
 	}
 	if m.NameNonASCII {
-		if !hasNonASCII(p.Name) {
+		if !hasNonASCII(s.p.Name) {
 			return "", false
 		}
-		why = append(why, fmt.Sprintf("name %q contains non-ASCII characters", p.Name))
+		why = append(why, fmt.Sprintf("name %q contains non-ASCII characters", s.p.Name))
 	}
 	if len(m.ParentStatus) > 0 {
-		if !inFold(p.ParentStatus, m.ParentStatus) {
+		if !inFold(s.p.ParentStatus, m.ParentStatus) {
 			return "", false
 		}
-		why = append(why, "parent status "+p.ParentStatus)
+		why = append(why, "parent status "+s.p.ParentStatus)
 	}
-	if len(why) == 0 { // a rule with no conditions never matches
+	if len(why) == 0 { // a block with no conditions never matches
 		return "", false
 	}
 	return strings.Join(why, "; "), true
@@ -221,6 +332,22 @@ func (r compiled) matches(p event.Process) (string, bool) {
 func normPath(p string) string {
 	p = strings.TrimPrefix(p, `\\?\`)
 	return strings.ToLower(p)
+}
+
+// normOriginal lower-cases an OriginalFileName and strips the ".mui" that
+// some Windows binaries carry (powershell.exe reports "PowerShell.EXE.MUI").
+func normOriginal(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	return strings.TrimSuffix(s, ".mui")
+}
+
+func hasAnyPrefix(s string, prefixes []string) bool {
+	for _, pre := range prefixes {
+		if strings.HasPrefix(s, strings.ToLower(pre)) {
+			return true
+		}
+	}
+	return false
 }
 
 func inFold(s string, list []string) bool {
@@ -242,44 +369,51 @@ func hasNonASCII(s string) bool {
 }
 
 // lookalike returns the protected name that name imitates, if any: a
-// different name within edit distance 1 (2 for names of 9+ characters).
-func lookalike(name string, protected []string) string {
+// different name exactly edits edits away, where an edit is one changed,
+// added, removed or swapped-neighbour character. With edits = 1 that catches
+// typosquats such as scvhost.exe (swap), svhost.exe (missing letter),
+// svch0st.exe and "lsass .exe". Real Windows binaries such as sihost.exe and
+// LsaIso.exe are two edits away, so rules using edits = 2 should exclude the
+// Windows system folders. Names that are themselves protected (lsass.exe vs
+// csrss.exe) never count.
+func lookalike(name string, protected []string, edits int) string {
 	for _, t := range protected {
-		t = strings.ToLower(t)
-		if name == t {
+		if name == strings.ToLower(t) {
 			return ""
 		}
 	}
 	for _, t := range protected {
 		t = strings.ToLower(t)
-		limit := 1
-		if len(t) >= 9 {
-			limit = 2
-		}
-		if d := levenshtein(name, t); d > 0 && d <= limit {
+		if editDistance(name, t) == edits {
 			return t
 		}
 	}
 	return ""
 }
 
-func levenshtein(a, b string) int {
+// editDistance is the optimal string alignment distance: Levenshtein plus
+// transposition of two adjacent characters counted as a single edit.
+func editDistance(a, b string) int {
 	ra, rb := []rune(a), []rune(b)
-	prev := make([]int, len(rb)+1)
-	cur := make([]int, len(rb)+1)
-	for j := range prev {
-		prev[j] = j
+	d := make([][]int, len(ra)+1)
+	for i := range d {
+		d[i] = make([]int, len(rb)+1)
+		d[i][0] = i
+	}
+	for j := range d[0] {
+		d[0][j] = j
 	}
 	for i := 1; i <= len(ra); i++ {
-		cur[0] = i
 		for j := 1; j <= len(rb); j++ {
 			cost := 1
 			if ra[i-1] == rb[j-1] {
 				cost = 0
 			}
-			cur[j] = min(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+			d[i][j] = min(d[i-1][j]+1, d[i][j-1]+1, d[i-1][j-1]+cost)
+			if i > 1 && j > 1 && ra[i-1] == rb[j-2] && ra[i-2] == rb[j-1] {
+				d[i][j] = min(d[i][j], d[i-2][j-2]+1)
+			}
 		}
-		prev, cur = cur, prev
 	}
-	return prev[len(rb)]
+	return d[len(ra)][len(rb)]
 }
