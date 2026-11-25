@@ -50,12 +50,35 @@
     {
       "id": "PT-W005",
       "title": "Process name imitates a Windows system process",
-      "description": "Names one or two characters away from a system binary, such as scvhost.exe or lsass .exe.",
+      "description": "Names exactly one edit (a changed, added, removed or swapped character) away from a system binary, such as scvhost.exe, svhost.exe or lsass .exe.",
       "severity": "high",
       "score": 70,
       "attack": ["T1036.005"],
       "match": {
         "name_lookalike": ["svchost.exe", "lsass.exe", "csrss.exe", "services.exe", "explorer.exe", "winlogon.exe", "smss.exe", "wininit.exe", "spoolsv.exe", "taskhostw.exe", "rundll32.exe", "conhost.exe"]
+      },
+      "except": {
+        "name": ["taskhost.exe"],
+        "path_prefix": ["c:\\windows\\system32\\"]
+      }
+    },
+    {
+      "id": "PT-W015",
+      "title": "Process name loosely imitates a Windows system process",
+      "description": "Names two edits away from a system binary (such as scvhst.exe or lsass64.exe) running outside the Windows system folders. Genuine Windows binaries at this distance (sihost.exe, LsaIso.exe, iexplore.exe) live in those folders.",
+      "severity": "medium",
+      "score": 55,
+      "attack": ["T1036.005"],
+      "match": {
+        "name_lookalike": ["svchost.exe", "lsass.exe", "csrss.exe", "services.exe", "explorer.exe", "winlogon.exe", "smss.exe", "wininit.exe", "spoolsv.exe", "taskhostw.exe", "rundll32.exe", "conhost.exe"],
+        "name_lookalike_edits": 2,
+        "path_prefix_not": [
+          "c:\\windows\\system32\\",
+          "c:\\windows\\syswow64\\",
+          "c:\\windows\\winsxs\\",
+          "c:\\program files\\internet explorer\\",
+          "c:\\program files (x86)\\internet explorer\\"
+        ]
       }
     },
     {

@@ -43,6 +43,7 @@ type Match struct {
 	PathContains     []string `json:"path_contains,omitempty"`
 	CommandLineRegex []string `json:"command_line_regex,omitempty"`
 	NameLookalike    []string `json:"name_lookalike,omitempty"`
+	LookalikeEdits   int      `json:"name_lookalike_edits,omitempty"` // exact edits for name_lookalike: 1 (default) or 2
 	NameNonASCII     bool     `json:"name_non_ascii,omitempty"`
 	ParentStatus     []string `json:"parent_status,omitempty"`
 }
@@ -112,6 +113,9 @@ func Load(data []byte, source string) (*Engine, error) {
 
 func compileMatch(m Match, id string) (compiledMatch, error) {
 	c := compiledMatch{Match: m}
+	if m.LookalikeEdits < 0 || m.LookalikeEdits > 2 {
+		return c, fmt.Errorf("rule %s: name_lookalike_edits must be 1 or 2", id)
+	}
 	for _, expr := range m.CommandLineRegex {
 		re, err := regexp.Compile("(?i)" + expr)
 		if err != nil {
@@ -296,11 +300,16 @@ func (m compiledMatch) eval(s subject) (string, bool) {
 		why = append(why, hit)
 	}
 	if len(m.NameLookalike) > 0 {
-		target := lookalike(s.name, m.NameLookalike)
+		edits := max(m.LookalikeEdits, 1)
+		target := lookalike(s.name, m.NameLookalike, edits)
 		if target == "" {
 			return "", false
 		}
-		why = append(why, fmt.Sprintf("name %q resembles %s", s.p.Name, target))
+		unit := "edit"
+		if edits > 1 {
+			unit = "edits"
+		}
+		why = append(why, fmt.Sprintf("name %q resembles %s (%d %s away)", s.p.Name, target, edits, unit))
 	}
 	if m.NameNonASCII {
 		if !hasNonASCII(s.p.Name) {
@@ -360,8 +369,14 @@ func hasNonASCII(s string) bool {
 }
 
 // lookalike returns the protected name that name imitates, if any: a
-// different name within edit distance 1 (2 for names of 9+ characters).
-func lookalike(name string, protected []string) string {
+// different name exactly edits edits away, where an edit is one changed,
+// added, removed or swapped-neighbour character. With edits = 1 that catches
+// typosquats such as scvhost.exe (swap), svhost.exe (missing letter),
+// svch0st.exe and "lsass .exe". Real Windows binaries such as sihost.exe and
+// LsaIso.exe are two edits away, so rules using edits = 2 should exclude the
+// Windows system folders. Names that are themselves protected (lsass.exe vs
+// csrss.exe) never count.
+func lookalike(name string, protected []string, edits int) string {
 	for _, t := range protected {
 		if name == strings.ToLower(t) {
 			return ""
@@ -369,34 +384,36 @@ func lookalike(name string, protected []string) string {
 	}
 	for _, t := range protected {
 		t = strings.ToLower(t)
-		limit := 1
-		if len(t) >= 9 {
-			limit = 2
-		}
-		if d := levenshtein(name, t); d > 0 && d <= limit {
+		if editDistance(name, t) == edits {
 			return t
 		}
 	}
 	return ""
 }
 
-func levenshtein(a, b string) int {
+// editDistance is the optimal string alignment distance: Levenshtein plus
+// transposition of two adjacent characters counted as a single edit.
+func editDistance(a, b string) int {
 	ra, rb := []rune(a), []rune(b)
-	prev := make([]int, len(rb)+1)
-	cur := make([]int, len(rb)+1)
-	for j := range prev {
-		prev[j] = j
+	d := make([][]int, len(ra)+1)
+	for i := range d {
+		d[i] = make([]int, len(rb)+1)
+		d[i][0] = i
+	}
+	for j := range d[0] {
+		d[0][j] = j
 	}
 	for i := 1; i <= len(ra); i++ {
-		cur[0] = i
 		for j := 1; j <= len(rb); j++ {
 			cost := 1
 			if ra[i-1] == rb[j-1] {
 				cost = 0
 			}
-			cur[j] = min(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+			d[i][j] = min(d[i-1][j]+1, d[i][j-1]+1, d[i-1][j-1]+cost)
+			if i > 1 && j > 1 && ra[i-1] == rb[j-2] && ra[i-2] == rb[j-1] {
+				d[i][j] = min(d[i][j], d[i-2][j-2]+1)
+			}
 		}
-		prev, cur = cur, prev
 	}
-	return prev[len(rb)]
+	return d[len(ra)][len(rb)]
 }

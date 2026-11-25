@@ -25,7 +25,8 @@ For every process it records the PID, name, image path, command line, start time
 | PT-W001 | Office app spawning PowerShell, cmd, mshta, rundll32, … | T1204.002, T1059 |
 | PT-W002 / W003 | `svchost.exe` not started by `services.exe`; `lsass.exe` not started by `wininit.exe` | T1036.005 |
 | PT-W004 | Core Windows binaries running outside `System32` | T1036.005 |
-| PT-W005 / W006 | Lookalike names (`scvhost.exe`, `lsass .exe`) and non-ASCII homoglyphs | T1036 |
+| PT-W005 / W015 | Lookalike names: 1 edit anywhere (`scvhost.exe`, `lsass .exe`), or 2 edits outside the Windows system folders (`scvhst.exe`, `lsass64.exe`) | T1036.005 |
+| PT-W006 | Non-ASCII characters in a name (homoglyphs) | T1036 |
 | PT-W007 | Encoded, obfuscated or download-cradle PowerShell | T1059.001, T1027 |
 | PT-W008–W011 | LOLBin abuse: rundll32 `javascript:`, regsvr32 Squiblydoo, certutil download/decode, mshta | T1218, T1105 |
 | PT-W012 / L001 | Web server spawning a shell (web shell) | T1505.003 |
@@ -175,7 +176,8 @@ A rule matches when **all** of its `match` conditions hold. Within a list, **any
 | `parent_name` / `parent_name_not` | Verified parent is / isn't in the list |
 | `path_prefix` / `path_prefix_not` / `path_contains` | Executable path starts with / doesn't start with / contains a value |
 | `command_line_regex` | Regex matches the normalised command line or decoded PowerShell payload |
-| `name_lookalike` | Name is 1–2 edits away from a listed name |
+| `name_lookalike` | Name is exactly one edit (changed, added, removed or swapped character) away from a listed name |
+| `name_lookalike_edits` | Use 2 instead of 1 for `name_lookalike`; pair it with `path_prefix_not` for the Windows folders |
 | `name_non_ascii` | Name contains non-ASCII characters |
 | `parent_status` | Lineage result is in the list (`verified`, `pid_reused`, …) |
 

