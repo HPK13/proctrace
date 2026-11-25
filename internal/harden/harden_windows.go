@@ -30,11 +30,13 @@ const (
 	writeMask = 0x2 | 0x4 | 0x40 | 0x10000 | 0x40000 | 0x80000 | 0x40000000 | 0x10000000
 )
 
-// trusted SIDs: SYSTEM, Administrators, TrustedInstaller.
+// trusted SIDs: SYSTEM, Administrators, and the TrustedInstaller service
+// (Windows Update's owner of system files, which has full control of
+// Program Files and everything inherited from it).
 var trusted = map[string]bool{
-	"S-1-5-18":     true,
-	"S-1-5-32-544": true,
-	"S-1-5-80-956008885-3418522649-1831038044-1975359781-227259940": true,
+	"S-1-5-18":                     true,
+	"S-1-5-32-544":                 true,
+	ServiceSID("TrustedInstaller"): true,
 }
 
 // Elevated reports whether the process runs with an elevated (admin) token.

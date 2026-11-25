@@ -9,9 +9,13 @@
 package harden
 
 import (
+	"crypto/sha1"
+	"encoding/binary"
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
+	"unicode/utf16"
 )
 
 // Target is a file or folder the agent depends on.
@@ -52,4 +56,22 @@ func Check(targets []Target) []string {
 	}
 	sort.Strings(problems)
 	return problems
+}
+
+// ServiceSID returns the SID Windows assigns to a service, such as
+// TrustedInstaller: S-1-5-80- followed by the SHA-1 of the upper-case
+// service name (UTF-16LE) read as five little-endian 32-bit numbers.
+// Deriving it avoids hard-coding a long number that is easy to get wrong.
+func ServiceSID(name string) string {
+	u := utf16.Encode([]rune(strings.ToUpper(name)))
+	b := make([]byte, 2*len(u))
+	for i, c := range u {
+		binary.LittleEndian.PutUint16(b[2*i:], c)
+	}
+	sum := sha1.Sum(b)
+	parts := make([]string, 5)
+	for i := range parts {
+		parts[i] = fmt.Sprint(binary.LittleEndian.Uint32(sum[4*i:]))
+	}
+	return "S-1-5-80-" + strings.Join(parts, "-")
 }
